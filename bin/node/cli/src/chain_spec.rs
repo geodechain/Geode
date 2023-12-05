@@ -240,7 +240,7 @@ pub fn testnet_genesis(
 		AuthorityDiscoveryId,
 	)>,
 	initial_nominators: Vec<AccountId>,
-	root_key: AccountId,
+	_root_key: AccountId,
 	endowed_accounts: Option<Vec<AccountId>>,
 ) -> GenesisConfig {
 	let mut endowed_accounts: Vec<AccountId> = endowed_accounts.unwrap_or_else(|| {
