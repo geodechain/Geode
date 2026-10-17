@@ -342,6 +342,10 @@ pub mod pallet {
 		/// The maximum length of the debug buffer in bytes.
 		#[pallet::constant]
 		type MaxDebugBufferLen: Get<u32>;
+
+		/// Origin allowed to bring new code on chain (`upload_code`, `instantiate_with_code`).
+		/// Its success value is the account that pays the deposit and owns the code.
+		type UploadOrigin: EnsureOrigin<Self::RuntimeOrigin, Success = Self::AccountId>;
 	}
 
 	#[pallet::hooks]
@@ -484,7 +488,7 @@ pub mod pallet {
 			storage_deposit_limit: Option<<BalanceOf<T> as codec::HasCompact>::Type>,
 			determinism: Determinism,
 		) -> DispatchResult {
-			let origin = ensure_signed(origin)?;
+			let origin = T::UploadOrigin::ensure_origin(origin)?;
 			Self::bare_upload_code(origin, code, storage_deposit_limit.map(Into::into), determinism)
 				.map(|_| ())
 		}
@@ -632,7 +636,7 @@ pub mod pallet {
 			data: Vec<u8>,
 			salt: Vec<u8>,
 		) -> DispatchResultWithPostInfo {
-			let origin = ensure_signed(origin)?;
+			let origin = T::UploadOrigin::ensure_origin(origin)?;
 			let code_len = code.len() as u32;
 			let data_len = data.len() as u32;
 			let salt_len = salt.len() as u32;

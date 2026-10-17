@@ -1520,7 +1520,9 @@ impl<T: Config> Pallet<T> {
 			.into_assignment(voter_at, target_at)
 			.map_err::<FeasibilityError, _>(Into::into)?;
 
-		// Ensure that assignments is correct.
+		// Ensure that assignments is correct. Each snapshot voter may appear at most once, so
+		// a solution cannot count the same stake more than once.
+		let mut seen_voters = sp_std::vec![false; snapshot_voters.len()];
 		let _ = assignments.iter().try_for_each(|assignment| {
 			// Check that assignment.who is actually a voter (defensive-only).
 			// NOTE: while using the index map from `voter_index` is better than a blind linear
@@ -1535,8 +1537,23 @@ impl<T: Config> Pallet<T> {
 			let (_voter, _stake, targets) =
 				snapshot_voters.get(snapshot_index).ok_or(FeasibilityError::InvalidVoter)?;
 
+			// Reject a voter listed more than once.
+			let seen = seen_voters.get_mut(snapshot_index).ok_or(FeasibilityError::InvalidVoter)?;
+			if sp_std::mem::replace(seen, true) {
+				return Err(FeasibilityError::InvalidVoter)
+			}
+
 			// Check that all of the targets are valid based on the snapshot.
 			if assignment.distribution.iter().any(|(d, _)| !targets.contains(d)) {
+				return Err(FeasibilityError::InvalidVote)
+			}
+			// Reject a target listed more than once for the same voter.
+			let distribution = &assignment.distribution;
+			if distribution
+				.iter()
+				.enumerate()
+				.any(|(i, (d, _))| distribution[..i].iter().any(|(e, _)| e == d))
+			{
 				return Err(FeasibilityError::InvalidVote)
 			}
 			Ok(())
@@ -1683,6 +1700,68 @@ mod feasibility_check {
 	use frame_support::{assert_noop, assert_ok};
 
 	const COMPUTE: ElectionCompute = ElectionCompute::OnChain;
+
+	#[test]
+	fn duplicate_voter_in_same_field_fails() {
+		ExtBuilder::default().build_and_execute(|| {
+			roll_to(<EpochLength>::get() - <SignedPhase>::get() - <UnsignedPhase>::get());
+			assert!(MultiPhase::current_phase().is_signed());
+
+			let mut raw = raw_solution();
+			assert_ok!(MultiPhase::feasibility_check(raw.clone(), COMPUTE));
+			let first = raw.solution.votes1[0];
+			raw.solution.votes1.push(first);
+			assert_noop!(
+				MultiPhase::feasibility_check(raw, COMPUTE),
+				FeasibilityError::InvalidVoter
+			);
+		})
+	}
+
+	#[test]
+	fn duplicate_voter_across_fields_fails() {
+		ExtBuilder::default().build_and_execute(|| {
+			roll_to(<EpochLength>::get() - <SignedPhase>::get() - <UnsignedPhase>::get());
+			assert!(MultiPhase::current_phase().is_signed());
+
+			let mut raw = raw_solution();
+			assert!(!raw.solution.votes2.is_empty());
+			let (voter, _, t1) = raw.solution.votes2[0];
+			raw.solution.votes1.push((voter, t1));
+			assert_noop!(
+				MultiPhase::feasibility_check(raw, COMPUTE),
+				FeasibilityError::InvalidVoter
+			);
+		})
+	}
+
+	#[test]
+	fn duplicate_target_for_one_voter_fails() {
+		ExtBuilder::default().build_and_execute(|| {
+			roll_to(<EpochLength>::get() - <SignedPhase>::get() - <UnsignedPhase>::get());
+			assert!(MultiPhase::current_phase().is_signed());
+
+			let mut raw = raw_solution();
+			// Pick a votes2 entry whose second target is still a winner elsewhere, so the
+			// winner count is unchanged when it is replaced by the first target.
+			let n = raw.solution.votes2.len();
+			let idx = (0..n)
+				.find(|&i| {
+					let t1 = raw.solution.votes2[i].2;
+					raw.solution.votes1.iter().any(|(_, t)| *t == t1) ||
+						raw.solution.votes2.iter().enumerate().any(|(j, (_, [(t0, _)], t))| {
+							*t0 == t1 || (j != i && *t == t1)
+						})
+				})
+				.expect("mock solution has a suitable votes2 entry");
+			let t0 = raw.solution.votes2[idx].1[0].0;
+			raw.solution.votes2[idx].2 = t0;
+			assert_noop!(
+				MultiPhase::feasibility_check(raw, COMPUTE),
+				FeasibilityError::InvalidVote
+			);
+		})
+	}
 
 	#[test]
 	fn snapshot_is_there() {

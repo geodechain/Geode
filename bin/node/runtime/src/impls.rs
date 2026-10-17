@@ -19,18 +19,32 @@
 
 use crate::{
 	AccountId, AllianceMotion, Assets, Authorship, Balances, Hash, NegativeImbalance, Runtime,
-	RuntimeCall,
+	RuntimeCall, RuntimeOrigin, TechnicalCommittee,
 };
 use frame_support::{
 	pallet_prelude::*,
 	traits::{
 		fungibles::{Balanced, CreditOf},
-		Currency, OnUnbalanced,
+		Currency, EnsureOrigin, OnUnbalanced,
 	},
 };
 use pallet_alliance::{IdentityVerifier, ProposalIndex, ProposalProvider};
 use pallet_asset_tx_payment::HandleCredit;
 use sp_std::prelude::*;
+
+/// Signed origin whose account is a current Technical Committee member.
+/// Uses the collective's own member list (not `TechnicalMembership`).
+pub struct EnsureTechCommitteeMember;
+impl EnsureOrigin<RuntimeOrigin> for EnsureTechCommitteeMember {
+	type Success = AccountId;
+	fn try_origin(o: RuntimeOrigin) -> Result<AccountId, RuntimeOrigin> {
+		Into::<Result<frame_system::RawOrigin<AccountId>, RuntimeOrigin>>::into(o).and_then(|o| match o {
+			frame_system::RawOrigin::Signed(who) if TechnicalCommittee::is_member(&who) =>
+				Ok(who),
+			r => Err(RuntimeOrigin::from(r)),
+		})
+	}
+}
 
 pub struct Author;
 impl OnUnbalanced<NegativeImbalance> for Author {

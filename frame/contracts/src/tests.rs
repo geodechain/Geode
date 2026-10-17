@@ -409,6 +409,7 @@ impl Config for Test {
 	type MaxStorageKeyLen = ConstU32<128>;
 	type UnsafeUnstableInterface = UnstableInterface;
 	type MaxDebugBufferLen = ConstU32<{ 2 * 1024 * 1024 }>;
+	type UploadOrigin = frame_system::EnsureSigned<AccountId32>;
 }
 
 pub const ALICE: AccountId32 = AccountId32::new([1u8; 32]);
