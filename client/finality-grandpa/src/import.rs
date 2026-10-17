@@ -551,6 +551,17 @@ where
 		if number <= self.inner.info().finalized_number {
 			// Importing an old block. Just save justifications and authority set changes
 			if self.check_new_change(&block.header, hash).is_some() {
+				// A different block is already canonical at this height: this one is a fork
+				// below finality and must not touch the authority set changes.
+				match self.inner.hash(number) {
+					Ok(Some(canonical)) if canonical != hash =>
+						return Err(ConsensusError::ClientImport(
+							"Old block with authority set change is not on the finalized chain"
+								.into(),
+						)),
+					Ok(_) => {},
+					Err(e) => return Err(ConsensusError::ClientImport(e.to_string())),
+				}
 				if block.justifications.is_none() {
 					return Err(ConsensusError::ClientImport(
 						"Justification required when importing \

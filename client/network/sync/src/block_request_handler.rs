@@ -324,7 +324,6 @@ where
 	) -> Result<BlockResponse, HandleRequestError> {
 		let get_header = attributes.contains(BlockAttributes::HEADER);
 		let get_body = attributes.contains(BlockAttributes::BODY);
-		let get_indexed_body = attributes.contains(BlockAttributes::INDEXED_BODY);
 		let get_justification = attributes.contains(BlockAttributes::JUSTIFICATION);
 
 		let mut blocks = Vec::new();
@@ -385,23 +384,9 @@ where
 				Vec::new()
 			};
 
-			let indexed_body = if get_indexed_body {
-				match self.client.block_indexed_body(hash)? {
-					Some(transactions) => transactions,
-					None => {
-						log::trace!(
-							target: LOG_TARGET,
-							"Missing indexed block data for block request."
-						);
-						// If the indexed body is missing we still continue returning headers.
-						// Ideally `None` should distinguish a missing body from the empty body,
-						// but the current protobuf based protocol does not allow it.
-						Vec::new()
-					},
-				}
-			} else {
-				Vec::new()
-			};
+			// Indexed bodies are never served: loading one can take gigabytes before any size
+			// check (F198), and no Geode node requests them. Same response as missing data.
+			let indexed_body = Vec::new();
 
 			let block_data = crate::schema::v1::BlockData {
 				hash: hash.encode(),

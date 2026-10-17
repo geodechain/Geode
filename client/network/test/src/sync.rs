@@ -1164,7 +1164,8 @@ async fn syncs_state() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn syncs_indexed_blocks() {
+async fn syncs_blocks_without_serving_indexed_bodies() {
+	// Indexed bodies are not served (F198): blocks sync, indexed data is not transferred.
 	use sp_runtime::traits::Hash;
 	sp_tracing::try_init_simple();
 	let mut net = TestNet::new(0);
@@ -1207,13 +1208,14 @@ async fn syncs_indexed_blocks() {
 		.is_none());
 
 	net.run_until_sync().await;
+	assert_eq!(net.peer(1).client().info().best_number, 64);
 	assert!(net
 		.peer(1)
 		.client()
 		.as_client()
 		.indexed_transaction(indexed_key)
 		.unwrap()
-		.is_some());
+		.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

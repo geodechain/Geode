@@ -17,9 +17,9 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 use libp2p::PeerId;
-use log::trace;
+use log::{debug, trace};
 use sc_network_common::sync::message;
-use sp_runtime::traits::{Block as BlockT, NumberFor, One};
+use sp_runtime::traits::{Block as BlockT, NumberFor, One, Saturating};
 use std::{
 	cmp,
 	collections::{BTreeMap, HashMap},
@@ -149,7 +149,7 @@ impl<B: BlockT> BlockCollection<B> {
 			trace!(target: "sync", "Out of range for peer {} ({} vs {})", who, range.start, peer_best);
 			return None
 		}
-		range.end = cmp::min(peer_best + One::one(), range.end);
+		range.end = cmp::min(peer_best.saturating_add(One::one()), range.end);
 
 		if self
 			.blocks
@@ -161,6 +161,14 @@ impl<B: BlockT> BlockCollection<B> {
 			return None
 		}
 
+		if range.end <= range.start {
+			debug!(
+				target: "sync",
+				"Empty range {:?} for peer {}, count={}, peer_best={}, common={}",
+				range, who, count, peer_best, common,
+			);
+			return None
+		}
 		self.peer_requests.insert(who, range.start);
 		self.blocks.insert(
 			range.start,
@@ -169,12 +177,6 @@ impl<B: BlockT> BlockCollection<B> {
 				downloading: downloading + 1,
 			},
 		);
-		if range.end <= range.start {
-			panic!(
-				"Empty range {:?}, count={}, peer_best={}, common={}, blocks={:?}",
-				range, count, peer_best, common, self.blocks
-			);
-		}
 		Some(range)
 	}
 
@@ -430,5 +432,17 @@ mod test {
 		bc.clear_queued(&blocks[0].hash);
 		assert!(bc.blocks.is_empty());
 		assert!(bc.queued_blocks.is_empty());
+	}
+	#[test]
+	fn peer_best_at_max_block_number_does_not_panic() {
+		// A peer can claim any best number in its handshake or announce (F197).
+		let mut bc = BlockCollection::<Block>::new();
+		let peer = PeerId::random();
+		assert_eq!(bc.needed_blocks(peer, 40, u64::MAX, 0, 1, 200), Some(1..41));
+		assert_eq!(bc.peer_requests.get(&peer), Some(&1));
+
+		// Second peer at the max number continues after the first range.
+		let peer2 = PeerId::random();
+		assert_eq!(bc.needed_blocks(peer2, 40, u64::MAX, 0, 1, 200), Some(41..81));
 	}
 }

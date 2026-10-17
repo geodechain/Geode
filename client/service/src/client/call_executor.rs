@@ -164,11 +164,8 @@ where
 
 		let runtime_code = self.check_override(runtime_code, at)?;
 
-		let extensions = self.execution_extensions.extensions(
-			at_hash,
-			at_number,
-			ExecutionContext::OffchainCall(None),
-		);
+		// Untrusted callers (Safe RPC): no keystore or transaction pool access.
+		let extensions = self.execution_extensions.untrusted_call_extensions(at_hash, at_number);
 
 		let mut sm = StateMachine::new(
 			&state,
@@ -297,11 +294,8 @@ where
 			method,
 			call_data,
 			&runtime_code,
-			self.execution_extensions.extensions(
-				at_hash,
-				at_number,
-				ExecutionContext::OffchainCall(None),
-			),
+			// Proofs are served to untrusted p2p peers: no keystore or transaction pool access.
+			self.execution_extensions.untrusted_call_extensions(at_hash, at_number),
 		)
 		.map_err(Into::into)
 	}

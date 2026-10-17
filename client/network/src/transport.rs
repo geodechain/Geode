@@ -19,13 +19,12 @@
 use libp2p::{
 	bandwidth,
 	core::{
-		self,
 		either::EitherTransport,
 		muxing::StreamMuxerBox,
 		transport::{Boxed, OptionalTransport},
 		upgrade,
 	},
-	dns, identity, mplex, noise, tcp, websocket, PeerId, Transport,
+	dns, identity, noise, tcp, websocket, PeerId, Transport,
 };
 use std::{sync::Arc, time::Duration};
 
@@ -94,11 +93,8 @@ pub fn build_transport(
 			xx_config.into_authenticated()
 		};
 
+	// Only yamux is offered: mplex has no flow control and unbounded per-stream buffers.
 	let multiplexing_config = {
-		let mut mplex_config = mplex::MplexConfig::new();
-		mplex_config.set_max_buffer_behaviour(mplex::MaxBufferBehaviour::Block);
-		mplex_config.set_max_buffer_size(usize::MAX);
-
 		let mut yamux_config = libp2p::yamux::YamuxConfig::default();
 		// Enable proper flow-control: window updates are only sent when
 		// buffered data has been consumed.
@@ -109,7 +105,7 @@ pub fn build_transport(
 			yamux_config.set_receive_window_size(yamux_window_size);
 		}
 
-		core::upgrade::SelectUpgrade::new(yamux_config, mplex_config)
+		yamux_config
 	};
 
 	let transport = transport
@@ -120,4 +116,63 @@ pub fn build_transport(
 		.boxed();
 
 	(transport, bandwidth)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use futures::prelude::*;
+	use libp2p::{
+		core::transport::{MemoryTransport, TransportEvent},
+		mplex, Multiaddr,
+	};
+
+	const MAX_BUFFER: usize = 16 * 1024 * 1024;
+
+	#[tokio::test]
+	async fn mplex_only_dialer_cannot_connect() {
+		let (mut listener, _) =
+			build_transport(identity::Keypair::generate_ed25519(), true, None, MAX_BUFFER);
+		let addr: Multiaddr = "/memory/917263541".parse().unwrap();
+		listener.listen_on(addr.clone()).unwrap();
+		tokio::spawn(async move {
+			loop {
+				if let TransportEvent::Incoming { upgrade, .. } = listener.select_next_some().await
+				{
+					tokio::spawn(async move {
+						let _ = upgrade.await;
+					});
+				}
+			}
+		});
+
+		let noise_config = || {
+			let keypair = identity::Keypair::generate_ed25519();
+			let keys = noise::Keypair::<noise::X25519Spec>::new().into_authentic(&keypair).unwrap();
+			noise::NoiseConfig::xx(keys).into_authenticated()
+		};
+
+		// Control: the same dialer offering yamux connects, so the failure below is the muxer.
+		let mut yamux_dialer = MemoryTransport::default()
+			.upgrade(upgrade::Version::V1)
+			.authenticate(noise_config())
+			.multiplex(libp2p::yamux::YamuxConfig::default())
+			.timeout(Duration::from_secs(5))
+			.boxed();
+		assert!(yamux_dialer.dial(addr.clone()).unwrap().await.is_ok());
+
+		// A peer that only offers mplex (F193) fails to negotiate a muxer.
+		let mut mplex_dialer = MemoryTransport::default()
+			.upgrade(upgrade::Version::V1)
+			.authenticate(noise_config())
+			.multiplex(mplex::MplexConfig::new())
+			.timeout(Duration::from_secs(5))
+			.boxed();
+		assert!(mplex_dialer.dial(addr.clone()).unwrap().await.is_err());
+
+		// A normal (yamux) peer still connects.
+		let (mut dialer, _) =
+			build_transport(identity::Keypair::generate_ed25519(), true, None, MAX_BUFFER);
+		assert!(dialer.dial(addr).unwrap().await.is_ok());
+	}
 }

@@ -383,7 +383,11 @@ where
 				}
 
 				let hash = self.transaction_pool.hash_of(&t);
-				peer.known_transactions.insert(hash.clone());
+				if !peer.known_transactions.insert(hash.clone()) {
+					// Already received from (or sent to) this peer; skip duplicates so they
+					// cost no memory or reputation messages.
+					continue
+				}
 
 				self.service.report_peer(who, rep::ANY_TRANSACTION);
 

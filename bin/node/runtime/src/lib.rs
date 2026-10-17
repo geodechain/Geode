@@ -131,7 +131,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// and set impl_version to 0. If only runtime
 	// implementation changes and behavior does not, then leave spec_version as
 	// is and increment impl_version.
-	spec_version: 20261016,
+	spec_version: 20261017,
 	impl_version: 0,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 2,
@@ -2750,7 +2750,7 @@ mod tests {
 
 		#[test]
 		fn version_bumped_tx_version_unchanged() {
-			assert_eq!(VERSION.spec_version, 20261016);
+			assert_eq!(VERSION.spec_version, 20261017);
 			assert_eq!(VERSION.transaction_version, 2);
 			let _ = remark().get_dispatch_info();
 		}

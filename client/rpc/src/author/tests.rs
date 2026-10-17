@@ -330,3 +330,45 @@ async fn author_has_key() {
 	};
 	assert!(!has_bob_ed);
 }
+
+#[tokio::test]
+async fn untrusted_calls_cannot_write_the_keystore() {
+	use sc_client_api::{CallExecutor, ExecutorProvider, ProofProvider};
+
+	let setup = TestSetup::default();
+	let best = setup.client.info().best_hash;
+	let call_data = None::<Vec<u8>>.encode();
+
+	// Safe RPC `state_call` path (F211).
+	let res = setup.client.executor().call(
+		&sp_runtime::generic::BlockId::Hash(best),
+		"SessionKeys_generate_session_keys",
+		&call_data,
+		setup.client.execution_extensions().strategies().other,
+	);
+	assert!(res.is_err());
+
+	// p2p light-client execution proof path (F249).
+	let res = setup.client.execution_proof(best, "SessionKeys_generate_session_keys", &call_data);
+	assert!(res.is_err());
+
+	assert!(SyncCryptoStore::keys(&*setup.keystore, ED25519).unwrap().is_empty());
+	assert!(SyncCryptoStore::keys(&*setup.keystore, SR25519).unwrap().is_empty());
+
+	// Read-only calls are unaffected.
+	assert!(setup
+		.client
+		.executor()
+		.call(
+			&sp_runtime::generic::BlockId::Hash(best),
+			"Core_version",
+			&[],
+			setup.client.execution_extensions().strategies().other,
+		)
+		.is_ok());
+
+	// `author_rotateKeys` (Unsafe RPC) still writes keys.
+	let api = setup.author().into_rpc();
+	let _: Bytes = api.call("author_rotateKeys", EmptyParams::new()).await.unwrap();
+	assert!(!SyncCryptoStore::keys(&*setup.keystore, ED25519).unwrap().is_empty());
+}
