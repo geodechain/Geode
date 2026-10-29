@@ -232,7 +232,36 @@ impl<Block: BlockT> ExecutionExtensions<Block> {
 		context: ExecutionContext,
 	) -> Extensions {
 		let capabilities = context.capabilities();
+		let offchain_ext = match context {
+			ExecutionContext::OffchainCall(Some((ext, _))) => Some(ext),
+			_ => None,
+		};
+		self.extensions_with_capabilities(block_hash, block_number, capabilities, offchain_ext)
+	}
 
+	/// Extensions for calls made on behalf of untrusted callers (Safe RPC `state_call`,
+	/// `chainHead_call`, p2p execution proofs): offchain DB reads only, no keystore and no
+	/// transaction pool.
+	pub fn untrusted_call_extensions(
+		&self,
+		block_hash: Block::Hash,
+		block_number: NumberFor<Block>,
+	) -> Extensions {
+		self.extensions_with_capabilities(
+			block_hash,
+			block_number,
+			offchain::Capabilities::OFFCHAIN_DB_READ,
+			None,
+		)
+	}
+
+	fn extensions_with_capabilities(
+		&self,
+		block_hash: Block::Hash,
+		block_number: NumberFor<Block>,
+		capabilities: offchain::Capabilities,
+		offchain_ext: Option<Box<dyn offchain::Externalities>>,
+	) -> Extensions {
 		let mut extensions =
 			self.extensions_factory
 				.read()
@@ -264,10 +293,10 @@ impl<Block: BlockT> ExecutionExtensions<Block> {
 			}
 		}
 
-		if let ExecutionContext::OffchainCall(Some(ext)) = context {
+		if let Some(ext) = offchain_ext {
 			extensions.register(OffchainWorkerExt::new(offchain::LimitedExternalities::new(
 				capabilities,
-				ext.0,
+				ext,
 			)));
 		}
 

@@ -658,8 +658,20 @@ const CODE_TRANSFER: &str = r#"
 )
 "#;
 
-#[test]
-fn deploying_wasm_contract_should_work() {
+/// Contract code may only be uploaded by a Technical Committee member (spec 20261016).
+fn set_tech_committee(
+	ext: &mut TestExternalities<sp_runtime::traits::BlakeTwo256>,
+	members: Vec<node_primitives::AccountId>,
+) {
+	ext.execute_with(|| {
+		frame_support::storage::unhashed::put(
+			&frame_support::storage::storage_prefix(b"TechnicalCommittee", b"Members"),
+			&members,
+		)
+	});
+}
+
+fn deploy_transfer_contract(tc_members: Vec<node_primitives::AccountId>) -> bool {
 	let transfer_code = wat::parse_str(CODE_TRANSFER).unwrap();
 	let transfer_ch = <Runtime as frame_system::Config>::Hashing::hash(&transfer_code);
 
@@ -667,8 +679,10 @@ fn deploying_wasm_contract_should_work() {
 		pallet_contracts::Pallet::<Runtime>::contract_address(&charlie(), &transfer_ch, &[], &[]);
 
 	let time = 42 * 1000;
+	let mut build_ext = new_test_ext(compact_code_unwrap());
+	set_tech_committee(&mut build_ext, tc_members.clone());
 	let b = construct_block(
-		&mut new_test_ext(compact_code_unwrap()),
+		&mut build_ext,
 		1,
 		GENESIS_HASH.into(),
 		vec![
@@ -704,18 +718,30 @@ fn deploying_wasm_contract_should_work() {
 	);
 
 	let mut t = new_test_ext(compact_code_unwrap());
+	set_tech_committee(&mut t, tc_members);
 
 	executor_call(&mut t, "Core_execute_block", &b.0, false).0.unwrap();
 
 	t.execute_with(|| {
-		// Verify that the contract does exist by querying some of its storage items
-		// It does not matter that the storage item itself does not exist.
-		assert!(&pallet_contracts::Pallet::<Runtime>::get_storage(
+		// The contract exists if querying any of its storage items succeeds
+		// (it does not matter that the storage item itself does not exist).
+		pallet_contracts::Pallet::<Runtime>::get_storage(
 			addr,
-			pallet_contracts::StorageKey::<Runtime>::default().to_vec()
+			pallet_contracts::StorageKey::<Runtime>::default().to_vec(),
 		)
-		.is_ok());
-	});
+		.is_ok()
+	})
+}
+
+#[test]
+fn deploying_wasm_contract_should_work() {
+	assert!(deploy_transfer_contract(vec![charlie()]));
+}
+
+#[test]
+fn deploying_wasm_contract_from_non_tech_committee_member_fails() {
+	assert!(!deploy_transfer_contract(vec![]));
+	assert!(!deploy_transfer_contract(vec![alice()]));
 }
 
 #[test]

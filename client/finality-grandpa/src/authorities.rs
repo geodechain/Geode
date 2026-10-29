@@ -748,13 +748,22 @@ impl<N: Ord + Clone> AuthoritySetChanges<N> {
 	}
 
 	pub(crate) fn insert(&mut self, block_number: N) {
-		let idx = self
-			.0
-			.binary_search_by_key(&block_number, |(_, n)| n.clone())
-			.unwrap_or_else(|b| b);
+		let idx = match self.0.binary_search_by_key(&block_number, |(_, n)| n.clone()) {
+			// Already recorded: nothing to do.
+			Ok(_) => return,
+			Err(idx) => idx,
+		};
 
 		let set_id = if idx == 0 { 0 } else { self.0[idx - 1].0 + 1 };
-		assert!(idx == self.0.len() || self.0[idx].0 != set_id);
+		if idx < self.0.len() && self.0[idx].0 == set_id {
+			// Would duplicate the next entry's set id; never panic on peer-supplied data.
+			log::warn!(
+				target: LOG_TARGET,
+				"Ignoring inconsistent authority set change (set id {})",
+				set_id,
+			);
+			return
+		}
 		self.0.insert(idx, (set_id, block_number));
 	}
 
@@ -1689,6 +1698,32 @@ mod tests {
 		authority_set_changes.insert(101);
 		assert_eq!(authority_set_changes.get_set_id(100), AuthoritySetChangeId::Set(2, 101));
 		assert_eq!(authority_set_changes.get_set_id(101), AuthoritySetChangeId::Set(2, 101));
+	}
+
+	#[test]
+	fn authority_set_changes_insert_duplicate_is_noop() {
+		let mut authority_set_changes = AuthoritySetChanges::empty();
+		authority_set_changes.append(0, 41);
+		authority_set_changes.append(1, 81);
+		let before = authority_set_changes.clone();
+
+		// Same block number again (used to hit an `assert!` and abort the node, F109).
+		authority_set_changes.insert(81);
+		authority_set_changes.insert(41);
+		assert_eq!(authority_set_changes, before);
+	}
+
+	#[test]
+	fn authority_set_changes_insert_colliding_set_id_is_ignored() {
+		let mut authority_set_changes = AuthoritySetChanges::empty();
+		authority_set_changes.append(0, 41);
+		authority_set_changes.append(1, 81);
+		let before = authority_set_changes.clone();
+
+		// 61 would get set id 1, the same as the entry at 81 (used to panic, F109).
+		authority_set_changes.insert(61);
+		assert_eq!(authority_set_changes, before);
+		assert_eq!(authority_set_changes.get_set_id(70), AuthoritySetChangeId::Set(1, 81));
 	}
 
 	#[test]

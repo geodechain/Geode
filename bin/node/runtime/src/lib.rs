@@ -33,7 +33,7 @@ use frame_support::{
 	parameter_types,
 	traits::{
 		fungible::ItemOf, AsEnsureOriginWithArg, ConstBool, ConstU128, ConstU16, ConstU32,
-		Currency, EitherOfDiverse, EqualPrivilegeOnly, Everything, Imbalance, InstanceFilter,
+		Contains, Currency, EitherOfDiverse, EqualPrivilegeOnly, Imbalance, InstanceFilter,
 		KeyOwnerProofSystem, LockIdentifier, Nothing, OnUnbalanced, U128CurrencyToVote,
 		WithdrawReasons,
 	},
@@ -96,6 +96,8 @@ pub mod impls;
 #[cfg(not(feature = "runtime-benchmarks"))]
 use impls::AllianceIdentityVerifier;
 use impls::{AllianceProposalProvider, Author, CreditToBlockAuthor};
+#[cfg(any(not(feature = "runtime-benchmarks"), test))]
+use impls::EnsureTechCommitteeMember;
 
 /// Constant values used within the runtime.
 pub mod constants;
@@ -129,7 +131,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// and set impl_version to 0. If only runtime
 	// implementation changes and behavior does not, then leave spec_version as
 	// is and increment impl_version.
-	spec_version: 20260115,
+	spec_version: 20261018,
 	impl_version: 0,
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 2,
@@ -204,8 +206,32 @@ parameter_types! {
 
 const_assert!(NORMAL_DISPATCH_RATIO.deconstruct() >= AVERAGE_ON_INITIALIZE_RATIO.deconstruct());
 
+/// Calls disabled for every non-Root origin. Root (an enacted referendum) bypasses
+/// `BaseCallFilter`, so governance keeps these powers.
+pub struct GeodeCallFilter;
+impl Contains<RuntimeCall> for GeodeCallFilter {
+	fn contains(c: &RuntimeCall) -> bool {
+		!matches!(
+			c,
+			// Public referenda: the council's Democracy external routes remain.
+			RuntimeCall::Referenda(pallet_referenda::Call::submit { .. }) |
+				RuntimeCall::RankedPolls(pallet_referenda::Call::submit { .. }) |
+				RuntimeCall::Democracy(pallet_democracy::Call::propose { .. }) |
+				RuntimeCall::Democracy(pallet_democracy::Call::second { .. }) |
+				// Assets pallet disabled without removing it.
+				RuntimeCall::Assets(..) |
+				// Transaction indexing disabled.
+				RuntimeCall::Remark(pallet_remark::Call::store { .. }) |
+				RuntimeCall::TransactionStorage(
+					pallet_transaction_storage::Call::store { .. } |
+						pallet_transaction_storage::Call::renew { .. }
+				)
+		)
+	}
+}
+
 impl frame_system::Config for Runtime {
-	type BaseCallFilter = Everything;
+	type BaseCallFilter = GeodeCallFilter;
 	type BlockWeights = RuntimeBlockWeights;
 	type BlockLength = RuntimeBlockLength;
 	type DbWeight = RocksDbWeight;
@@ -295,14 +321,55 @@ impl InstanceFilter<RuntimeCall> for ProxyType {
 	fn filter(&self, c: &RuntimeCall) -> bool {
 		match self {
 			ProxyType::Any => true,
-			ProxyType::NonTransfer => !matches!(
+			// Allow-list: excludes every call that moves value or re-dispatches with a fresh,
+			// unfiltered origin (nested Proxy, Multisig, Recovery, Contracts).
+			ProxyType::NonTransfer => matches!(
 				c,
-				RuntimeCall::Balances(..) |
-					RuntimeCall::Assets(..) |
-					RuntimeCall::Uniques(..) |
-					RuntimeCall::Nfts(..) |
-					RuntimeCall::Vesting(pallet_vesting::Call::vested_transfer { .. }) |
-					RuntimeCall::Indices(pallet_indices::Call::transfer { .. })
+				RuntimeCall::System(..) |
+					RuntimeCall::Babe(..) |
+					RuntimeCall::Timestamp(..) |
+					RuntimeCall::Indices(pallet_indices::Call::claim { .. }) |
+					RuntimeCall::Indices(pallet_indices::Call::free { .. }) |
+					RuntimeCall::Indices(pallet_indices::Call::freeze { .. }) |
+					RuntimeCall::Staking(..) |
+					RuntimeCall::Session(..) |
+					RuntimeCall::Grandpa(..) |
+					RuntimeCall::ImOnline(..) |
+					RuntimeCall::Democracy(..) |
+					RuntimeCall::Council(..) |
+					RuntimeCall::TechnicalCommittee(..) |
+					RuntimeCall::Elections(..) |
+					RuntimeCall::TechnicalMembership(..) |
+					RuntimeCall::Treasury(..) |
+					RuntimeCall::Bounties(..) |
+					RuntimeCall::ChildBounties(..) |
+					RuntimeCall::Tips(..) |
+					RuntimeCall::Identity(..) |
+					RuntimeCall::Society(..) |
+					RuntimeCall::Vesting(pallet_vesting::Call::vest { .. }) |
+					RuntimeCall::Vesting(pallet_vesting::Call::vest_other { .. }) |
+					RuntimeCall::Vesting(pallet_vesting::Call::merge_schedules { .. }) |
+					RuntimeCall::Scheduler(..) |
+					RuntimeCall::Preimage(..) |
+					RuntimeCall::ConvictionVoting(..) |
+					RuntimeCall::Referenda(..) |
+					RuntimeCall::Whitelist(..) |
+					RuntimeCall::NominationPools(..) |
+					RuntimeCall::FastUnstake(..) |
+					RuntimeCall::Utility(pallet_utility::Call::batch { .. }) |
+					RuntimeCall::Utility(pallet_utility::Call::batch_all { .. }) |
+					RuntimeCall::Utility(pallet_utility::Call::force_batch { .. }) |
+					RuntimeCall::Utility(pallet_utility::Call::as_derivative { .. }) |
+					RuntimeCall::Proxy(
+						pallet_proxy::Call::add_proxy { .. } |
+							pallet_proxy::Call::remove_proxy { .. } |
+							pallet_proxy::Call::remove_proxies { .. } |
+							pallet_proxy::Call::create_pure { .. } |
+							pallet_proxy::Call::kill_pure { .. } |
+							pallet_proxy::Call::announce { .. } |
+							pallet_proxy::Call::remove_announcement { .. } |
+							pallet_proxy::Call::reject_announcement { .. }
+					)
 			),
 			ProxyType::Governance => matches!(
 				c,
@@ -1218,6 +1285,11 @@ impl pallet_contracts::Config for Runtime {
 	type MaxStorageKeyLen = ConstU32<128>;
 	type UnsafeUnstableInterface = ConstBool<false>;
 	type MaxDebugBufferLen = ConstU32<{ 2 * 1024 * 1024 }>;
+	/// New contract code may only be uploaded by a Technical Committee member.
+	#[cfg(not(feature = "runtime-benchmarks"))]
+	type UploadOrigin = EnsureTechCommitteeMember;
+	#[cfg(feature = "runtime-benchmarks")]
+	type UploadOrigin = EnsureSigned<AccountId>;
 }
 
 /* 🟢 
@@ -2071,6 +2143,16 @@ impl_runtime_apis! {
 			salt: Vec<u8>,
 		) -> pallet_contracts_primitives::ContractInstantiateResult<AccountId, Balance>
 		{
+			// Dry-runs may only execute code already on chain (uploaded by a TC member).
+			if let pallet_contracts_primitives::Code::Upload(_) = code {
+				return pallet_contracts_primitives::ContractResult {
+					gas_consumed: Weight::zero(),
+					gas_required: Weight::zero(),
+					storage_deposit: Default::default(),
+					debug_message: Vec::new(),
+					result: Err(sp_runtime::DispatchError::BadOrigin),
+				}
+			}
 			let gas_limit = gas_limit.unwrap_or(RuntimeBlockWeights::get().max_block);
 			Contracts::bare_instantiate(
 				origin,
@@ -2346,6 +2428,332 @@ mod tests {
 			.collect();
 		let _: UpperOf<OnChainAccuracy> =
 			maximum_chain_accuracy.iter().fold(0, |acc, x| acc.checked_add(*x).unwrap());
+	}
+
+	mod phase1_20261016 {
+		use super::*;
+		use frame_support::{
+			assert_noop, assert_ok,
+			dispatch::GetDispatchInfo,
+			traits::{EnsureOrigin, GenesisBuild},
+		};
+		use sp_runtime::{traits::Dispatchable, DispatchError};
+
+		fn acc(n: u8) -> AccountId {
+			AccountId::from([n; 32])
+		}
+
+		fn remark() -> RuntimeCall {
+			RuntimeCall::System(frame_system::Call::remark { remark: vec![1] })
+		}
+
+		fn transfer() -> RuntimeCall {
+			RuntimeCall::Balances(pallet_balances::Call::transfer {
+				dest: acc(9).into(),
+				value: DOLLARS,
+			})
+		}
+
+		fn new_ext() -> sp_io::TestExternalities {
+			let mut t = frame_system::GenesisConfig::default().build_storage::<Runtime>().unwrap();
+			pallet_balances::GenesisConfig::<Runtime> {
+				balances: (1u8..=9).map(|n| (acc(n), 1_000_000 * DOLLARS)).collect(),
+			}
+			.assimilate_storage(&mut t)
+			.unwrap();
+			pallet_collective::GenesisConfig::<Runtime, pallet_collective::Instance2> {
+				members: vec![acc(1)],
+				phantom: Default::default(),
+			}
+			.assimilate_storage(&mut t)
+			.unwrap();
+			let mut ext = sp_io::TestExternalities::new(t);
+			ext.execute_with(|| System::set_block_number(1));
+			ext
+		}
+
+		fn blocked_calls() -> Vec<RuntimeCall> {
+			let inline = |c: RuntimeCall| {
+				frame_support::traits::Bounded::Inline(c.encode().try_into().unwrap())
+			};
+			vec![
+				RuntimeCall::Referenda(pallet_referenda::Call::submit {
+					proposal_origin: Box::new(frame_system::RawOrigin::Root.into()),
+					proposal: inline(remark()),
+					enactment_moment: frame_support::traits::schedule::DispatchTime::After(0),
+				}),
+				RuntimeCall::RankedPolls(pallet_referenda::Call::submit {
+					proposal_origin: Box::new(frame_system::RawOrigin::Root.into()),
+					proposal: inline(remark()),
+					enactment_moment: frame_support::traits::schedule::DispatchTime::After(0),
+				}),
+				RuntimeCall::Democracy(pallet_democracy::Call::propose {
+					proposal: inline(remark()),
+					value: 10 * DOLLARS,
+				}),
+				RuntimeCall::Democracy(pallet_democracy::Call::second { proposal: 0 }),
+				RuntimeCall::Assets(pallet_assets::Call::create {
+					id: codec::Compact(1),
+					admin: acc(1).into(),
+					min_balance: 1,
+				}),
+				RuntimeCall::Assets(pallet_assets::Call::touch { id: codec::Compact(1) }),
+				RuntimeCall::Remark(pallet_remark::Call::store { remark: vec![1] }),
+				RuntimeCall::TransactionStorage(pallet_transaction_storage::Call::store {
+					data: vec![1],
+				}),
+				RuntimeCall::TransactionStorage(pallet_transaction_storage::Call::renew {
+					block: 1,
+					index: 0,
+				}),
+			]
+		}
+
+		#[test]
+		fn base_filter_blocks_listed_calls() {
+			for c in blocked_calls() {
+				assert!(!GeodeCallFilter::contains(&c), "{:?} should be blocked", c);
+			}
+		}
+
+		#[test]
+		fn base_filter_allows_neighbours() {
+			let allowed = vec![
+				remark(),
+				RuntimeCall::System(frame_system::Call::remark_with_event { remark: vec![1] }),
+				transfer(),
+				RuntimeCall::Democracy(pallet_democracy::Call::external_propose {
+					proposal: frame_support::traits::Bounded::Inline(
+						remark().encode().try_into().unwrap(),
+					),
+				}),
+				RuntimeCall::Referenda(pallet_referenda::Call::place_decision_deposit {
+					index: 0,
+				}),
+				RuntimeCall::TransactionStorage(pallet_transaction_storage::Call::check_proof {
+					// Empty proof (two empty vecs); avoids a new dev-dependency.
+					proof: Decode::decode(&mut &[0u8, 0u8][..]).unwrap(),
+				}),
+				RuntimeCall::Uniques(pallet_uniques::Call::create {
+					collection: 1,
+					admin: acc(1).into(),
+				}),
+				RuntimeCall::Utility(pallet_utility::Call::batch { calls: vec![remark()] }),
+			];
+			for c in allowed {
+				assert!(GeodeCallFilter::contains(&c), "{:?} should be allowed", c);
+			}
+		}
+
+		#[test]
+		fn blocked_calls_fail_for_signed_and_nested_but_not_root() {
+			new_ext().execute_with(|| {
+				let store = RuntimeCall::Remark(pallet_remark::Call::store { remark: vec![1] });
+				// Top level, signed.
+				assert_noop!(
+					store.clone().dispatch(RuntimeOrigin::signed(acc(2))),
+					frame_system::Error::<Runtime>::CallFiltered
+				);
+				// Nested in batch_all: the batch fails with the inner CallFiltered error.
+				let batch = RuntimeCall::Utility(pallet_utility::Call::batch_all {
+					calls: vec![remark(), store.clone()],
+				});
+				let err = batch.dispatch(RuntimeOrigin::signed(acc(2))).unwrap_err();
+				assert_eq!(err.error, frame_system::Error::<Runtime>::CallFiltered.into());
+				// Root bypasses BaseCallFilter (Assets is blocked for everyone else).
+				let force_create = RuntimeCall::Assets(pallet_assets::Call::force_create {
+					id: codec::Compact(1),
+					owner: acc(1).into(),
+					is_sufficient: false,
+					min_balance: 1,
+				});
+				assert_noop!(
+					force_create.clone().dispatch(RuntimeOrigin::signed(acc(1))),
+					frame_system::Error::<Runtime>::CallFiltered
+				);
+				assert_ok!(force_create.dispatch(RuntimeOrigin::root()));
+				drop(store);
+				// Unaffected neighbours still dispatch.
+				assert_ok!(remark().dispatch(RuntimeOrigin::signed(acc(2))));
+			})
+		}
+
+		#[test]
+		fn non_transfer_proxy_excludes_value_and_redispatch_calls() {
+			let p = ProxyType::NonTransfer;
+			let excluded = vec![
+				transfer(),
+				RuntimeCall::Assets(pallet_assets::Call::touch { id: codec::Compact(1) }),
+				RuntimeCall::Uniques(pallet_uniques::Call::create {
+					collection: 1,
+					admin: acc(1).into(),
+				}),
+				RuntimeCall::Indices(pallet_indices::Call::transfer { new: acc(9).into(), index: 1 }),
+				RuntimeCall::Recovery(pallet_recovery::Call::create_recovery {
+					friends: vec![acc(3)],
+					threshold: 1,
+					delay_period: 0,
+				}),
+				RuntimeCall::Recovery(pallet_recovery::Call::as_recovered {
+					account: acc(3).into(),
+					call: Box::new(transfer()),
+				}),
+				RuntimeCall::Contracts(pallet_contracts::Call::call {
+					dest: acc(3).into(),
+					value: 1,
+					gas_limit: Weight::zero(),
+					storage_deposit_limit: None,
+					data: vec![],
+				}),
+				RuntimeCall::Multisig(pallet_multisig::Call::as_multi_threshold_1 {
+					other_signatories: vec![acc(3)],
+					call: Box::new(transfer()),
+				}),
+				RuntimeCall::Proxy(pallet_proxy::Call::proxy {
+					real: acc(3).into(),
+					force_proxy_type: None,
+					call: Box::new(transfer()),
+				}),
+				RuntimeCall::Proxy(pallet_proxy::Call::proxy_announced {
+					delegate: acc(3).into(),
+					real: acc(4).into(),
+					force_proxy_type: None,
+					call: Box::new(transfer()),
+				}),
+				RuntimeCall::Lottery(pallet_lottery::Call::buy_ticket { call: Box::new(remark()) }),
+			];
+			for c in excluded {
+				assert!(!p.filter(&c), "{:?} should be excluded", c);
+			}
+		}
+
+		#[test]
+		fn non_transfer_proxy_allows_listed_calls() {
+			let p = ProxyType::NonTransfer;
+			let allowed = vec![
+				remark(),
+				RuntimeCall::Staking(pallet_staking::Call::chill {}),
+				RuntimeCall::Democracy(pallet_democracy::Call::remove_vote { index: 0 }),
+				RuntimeCall::Council(pallet_collective::Call::vote {
+					proposal: Default::default(),
+					index: 0,
+					approve: true,
+				}),
+				RuntimeCall::Identity(pallet_identity::Call::clear_identity {}),
+				RuntimeCall::Vesting(pallet_vesting::Call::vest {}),
+				RuntimeCall::Utility(pallet_utility::Call::batch { calls: vec![remark()] }),
+				RuntimeCall::Proxy(pallet_proxy::Call::remove_proxies {}),
+				RuntimeCall::NominationPools(pallet_nomination_pools::Call::chill { pool_id: 1 }),
+			];
+			for c in allowed {
+				assert!(p.filter(&c), "{:?} should be allowed", c);
+			}
+			// Any is unchanged; Governance and Staking stay subsets of NonTransfer.
+			assert!(ProxyType::Any.filter(&transfer()));
+			assert!(p.is_superset(&ProxyType::Governance));
+			assert!(p.is_superset(&ProxyType::Staking));
+		}
+
+		#[test]
+		fn non_transfer_proxy_cannot_reach_nested_proxy() {
+			new_ext().execute_with(|| {
+				// acc(3) is an Any delegate of acc(4); acc(2) is a NonTransfer delegate of acc(3).
+				assert_ok!(Proxy::add_proxy(
+					RuntimeOrigin::signed(acc(4)),
+					acc(3).into(),
+					ProxyType::Any,
+					0
+				));
+				assert_ok!(Proxy::add_proxy(
+					RuntimeOrigin::signed(acc(3)),
+					acc(2).into(),
+					ProxyType::NonTransfer,
+					0
+				));
+				let before = Balances::free_balance(acc(4));
+				let inner = RuntimeCall::Proxy(pallet_proxy::Call::proxy {
+					real: acc(4).into(),
+					force_proxy_type: None,
+					call: Box::new(transfer()),
+				});
+				assert_ok!(Proxy::proxy(
+					RuntimeOrigin::signed(acc(2)),
+					acc(3).into(),
+					None,
+					Box::new(inner)
+				));
+				// The inner call was filtered, so acc(4) keeps its balance.
+				assert_eq!(Balances::free_balance(acc(4)), before);
+				System::assert_last_event(RuntimeEvent::Proxy(pallet_proxy::Event::ProxyExecuted {
+					result: Err(frame_system::Error::<Runtime>::CallFiltered.into()),
+				}));
+			})
+		}
+
+		#[test]
+		fn upload_origin_is_tech_committee_member() {
+			new_ext().execute_with(|| {
+				assert!(TechnicalCommittee::is_member(&acc(1)));
+				assert_eq!(
+					EnsureTechCommitteeMember::try_origin(RuntimeOrigin::signed(acc(1))).ok(),
+					Some(acc(1))
+				);
+				assert!(EnsureTechCommitteeMember::try_origin(RuntimeOrigin::signed(acc(2))).is_err());
+				assert!(EnsureTechCommitteeMember::try_origin(RuntimeOrigin::root()).is_err());
+				assert!(EnsureTechCommitteeMember::try_origin(RuntimeOrigin::none()).is_err());
+
+				let upload = |who: u8| {
+					Contracts::upload_code(
+						RuntimeOrigin::signed(acc(who)),
+						vec![0u8; 8],
+						None,
+						pallet_contracts::Determinism::Deterministic,
+					)
+				};
+				assert_noop!(upload(2), DispatchError::BadOrigin);
+				// A TC member passes the origin check (the dummy code then fails validation).
+				assert!(upload(1).unwrap_err() != DispatchError::BadOrigin);
+			})
+		}
+
+		#[test]
+		fn contracts_dry_run_rejects_inline_code() {
+			use pallet_contracts::runtime_decl_for_ContractsApi::ContractsApiV2;
+			use pallet_contracts_primitives::Code;
+			new_ext().execute_with(|| {
+				for who in [1u8, 2u8] {
+					let r = <Runtime as ContractsApiV2<Block, AccountId, Balance, BlockNumber, Hash>>::instantiate(
+						acc(who),
+						0,
+						None,
+						None,
+						Code::Upload(vec![0u8; 8]),
+						vec![],
+						vec![],
+					);
+					assert_eq!(r.result.unwrap_err(), DispatchError::BadOrigin);
+					assert_eq!(r.gas_consumed, Weight::zero());
+				}
+				// Existing-code dry-runs still execute (an unknown hash fails inside the pallet).
+				let r = <Runtime as ContractsApiV2<Block, AccountId, Balance, BlockNumber, Hash>>::instantiate(
+					acc(2),
+					0,
+					None,
+					None,
+					Code::Existing(Default::default()),
+					vec![],
+					vec![],
+				);
+				assert!(r.result.unwrap_err() != DispatchError::BadOrigin);
+			})
+		}
+
+		#[test]
+		fn version_bumped_tx_version_unchanged() {
+			assert_eq!(VERSION.spec_version, 20261018);
+			assert_eq!(VERSION.transaction_version, 2);
+			let _ = remark().get_dispatch_info();
+		}
 	}
 
 	#[test]

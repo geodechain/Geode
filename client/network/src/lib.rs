@@ -85,10 +85,8 @@
 //! On top of the base-layer protocol, the [Noise](https://noiseprotocol.org/) protocol is
 //! negotiated and applied. The exact handshake protocol is experimental and is subject to change.
 //!
-//! The following multiplexing protocols are supported:
+//! The following multiplexing protocol is supported:
 //!
-//! - [Mplex](https://github.com/libp2p/specs/tree/master/mplex). Support for mplex will likely
-//! be deprecated in the future.
 //! - [Yamux](https://github.com/hashicorp/yamux/blob/master/spec.md).
 //!
 //! ## Substreams
